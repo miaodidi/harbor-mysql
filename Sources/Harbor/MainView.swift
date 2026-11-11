@@ -32,6 +32,11 @@ private struct SQLTextEditor: NSViewRepresentable {
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        // Keep the coordinator's binding and editability in sync with SwiftUI.
+        // The footer is redrawn after each keystroke, so retaining the first
+        // representable value here can otherwise send later edits to an old
+        // tab and make the insertion point appear to jump.
+        context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
         textView.isEditable = isEditable
         // SwiftUI may redraw this view after every keystroke. Only replace the
@@ -146,7 +151,7 @@ private struct SidebarView: View {
                                 Image(systemName: "externaldrive").foregroundStyle(model.connectedID == profile.id ? Color.accentColor : Color.secondary)
                                 Text(profile.name).lineLimit(1); Spacer()
                                 if model.connectedID == profile.id { Circle().fill(.green).frame(width: 5, height: 5) }
-                            }.padding(.vertical, 7).contentShape(Rectangle()).onTapGesture(count: 2) { model.connect(profile) }
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7).contentShape(Rectangle()).onTapGesture(count: 2) { model.connect(profile) }
                             .contextMenu {
                                 Button("连接") { model.connect(profile) }.disabled(model.busy)
                                 if model.connectedID == profile.id { Button("断开连接") { model.disconnect() }.disabled(model.busy) }
@@ -162,8 +167,8 @@ private struct SidebarView: View {
                                             Image(systemName: "cylinder").foregroundStyle(model.linkedDatabases.contains(db) ? Color.green : Color.secondary)
                                             Text(db).foregroundStyle(model.linkedDatabases.contains(db) ? .primary : .secondary).lineLimit(1); Spacer()
                                             if model.linkedDatabases.contains(db) { Circle().fill(.green).frame(width: 5, height: 5) }
-                                        }.padding(.vertical, 5)
-                                    }.buttonStyle(.plain).padding(.leading, 12)
+                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).padding(.leading, 12).contentShape(Rectangle())
+                                    }.buttonStyle(.plain)
                                     .simultaneousGesture(TapGesture(count: 2).onEnded { model.linkDatabase(db) })
                                     .contextMenu {
                                         if model.linkedDatabases.contains(db) {
@@ -228,14 +233,7 @@ private struct WorkspaceView: View {
         HStack(spacing: 8) {
             Button { model.editActive { $0.editorVisible.toggle() } } label: { Label("编辑器", systemImage: "square.and.pencil") }.tint(tab.editorVisible ? .accentColor : nil)
             Button { model.editActive { $0.filterVisible.toggle() } } label: { Label("筛选 & 排序", systemImage: "line.3.horizontal.decrease") }.tint(tab.filterVisible ? .accentColor : nil)
-            Menu {
-                Button("反转选择") { model.invertColumns() }
-                Divider()
-                ForEach(tab.schema) { column in
-                    Toggle(column.name, isOn: Binding(get: { tab.visibleColumns.contains(column.name) }, set: { model.setColumn(column.name, visible: $0) }))
-                        .disabled(!model.canUseTableTools || (tab.visibleColumns.count == 1 && tab.visibleColumns.contains(column.name)))
-                }
-            } label: { Label("列", systemImage: "rectangle.split.3x1") }.fixedSize()
+            ColumnPicker(tab: tab)
             Spacer()
         }.disabled(!model.canUseTableTools).controlSize(.small).padding(.horizontal, 12).frame(height: 44).background(Color(nsColor: .controlBackgroundColor))
     }
@@ -285,6 +283,45 @@ private struct WorkspaceView: View {
     }
 }
 
+private struct ColumnPicker: View {
+    @EnvironmentObject var model: AppModel
+    let tab: WorkspaceTab
+    @State private var showing = false
+    @State private var selection: Set<String> = []
+    var body: some View {
+        Button { selection = tab.visibleColumns; showing = true } label: {
+            Label("列", systemImage: "rectangle.split.3x1")
+        }.popover(isPresented: $showing) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("显示列").fontWeight(.medium)
+                    Spacer()
+                    Button("全选") { selection = Set(tab.schema.map(\.name)) }
+                    Button("反转选择") { selection = Set(tab.schema.map(\.name)).subtracting(selection) }
+                }
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(tab.schema) { column in
+                            Toggle(column.name, isOn: Binding(get: { selection.contains(column.name) }, set: { checked in
+                                if checked { selection.insert(column.name) } else { selection.remove(column.name) }
+                            })).toggleStyle(.checkbox).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.padding(2)
+                }.frame(height: min(CGFloat(tab.schema.count * 28), 320))
+                Divider()
+                HStack {
+                    Text("已选 \(selection.count) 列").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("取消") { showing = false }
+                    Button("应用") { model.setColumns(selection); showing = false }
+                        .buttonStyle(.borderedProminent).disabled(selection.isEmpty || !model.canUseTableTools)
+                }
+            }.padding(14).frame(width: 300).controlSize(.small)
+        }
+    }
+}
+
 private struct FilterPanel: View {
     @EnvironmentObject var model: AppModel
     let tab: WorkspaceTab
@@ -297,15 +334,17 @@ private struct FilterPanel: View {
     @State private var sortEnabled = false
     @State private var suggestions: [String] = []
     @State private var showingSuggestions = false
+    @FocusState private var valueFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 9) {
-                Toggle("筛选", isOn: $enabled).toggleStyle(.checkbox).frame(width: 76, alignment: .leading)
-                Picker("字段", selection: $field) { ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 150)
-                Picker("条件", selection: $operation) { ForEach(FilterOperator.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(width: 120)
+            HStack(spacing: 8) {
+                Toggle("筛选", isOn: $enabled).toggleStyle(.checkbox).frame(width: 56, alignment: .leading)
+                Picker("字段", selection: $field) { ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 110)
+                Picker("条件", selection: $operation) { ForEach(FilterOperator.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(width: 92)
                 TextField("筛选值", text: $value)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 240)
+                    .focused($valueFocused)
+                    .frame(minWidth: 90, maxWidth: .infinity)
                     .disabled(operation == .isNull || operation == .isNotNull)
                     .onTapGesture { showingSuggestions = !suggestions.isEmpty }
                     .onChange(of: value) { _, newValue in refreshSuggestions(newValue) }
@@ -326,11 +365,11 @@ private struct FilterPanel: View {
                     }
                 Spacer()
             }
-            HStack(spacing: 9) {
-                Toggle("排序", isOn: $sortEnabled).toggleStyle(.checkbox).frame(width: 76, alignment: .leading)
-                Picker("排序字段", selection: $sortField) { Text("选择字段").tag(""); ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 150).disabled(!sortEnabled)
-                Picker("方向", selection: $direction) { Text("升序").tag(SortDirection.ascending); Text("降序").tag(SortDirection.descending) }.labelsHidden().frame(width: 120).disabled(!sortEnabled)
-                Spacer()
+            HStack(spacing: 8) {
+                Toggle("排序", isOn: $sortEnabled).toggleStyle(.checkbox).frame(width: 56, alignment: .leading)
+                Picker("排序字段", selection: $sortField) { Text("选择字段").tag(""); ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 110).disabled(!sortEnabled)
+                Picker("方向", selection: $direction) { Text("升序").tag(SortDirection.ascending); Text("降序").tag(SortDirection.descending) }.labelsHidden().frame(width: 92).disabled(!sortEnabled)
+                Spacer(minLength: 4)
                 Button("清除") { enabled = false; value = ""; sortEnabled = false; sortField = ""; model.applyFilter(nil, sort: nil) }
                 Button("应用") { model.applyFilter(enabled ? FilterRule(column: field, operation: operation, value: value) : nil, sort: sortEnabled && !sortField.isEmpty ? SortRule(column: sortField, direction: direction) : nil) }.buttonStyle(.borderedProminent)
             }
@@ -343,12 +382,13 @@ private struct FilterPanel: View {
     private func refreshSuggestions(_ query: String) {
         guard operation != .isNull, operation != .isNotNull, !field.isEmpty, model.canUseTableTools else { suggestions = []; return }
         let expected = query
+        let expectedField = field
         Task {
             try? await Task.sleep(for: .milliseconds(160))
-            let values = await model.filterSuggestions(for: tab, column: field, query: expected)
-            guard value == expected else { return }
+            let values = await model.filterSuggestions(for: tab, column: expectedField, query: expected)
+            guard value == expected, field == expectedField else { return }
             suggestions = values
-            showingSuggestions = !values.isEmpty
+            showingSuggestions = valueFocused && !values.isEmpty
         }
     }
 }

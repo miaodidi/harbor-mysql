@@ -255,15 +255,12 @@ struct WorkspaceTab: Identifiable {
         editActive { if visible { $0.visibleColumns.insert(name) } else { $0.visibleColumns.remove(name) } }
         perform("更新显示列…") { try await self.loadTable(id) }
     }
-    func invertColumns() {
+    func setColumns(_ columns: Set<String>) {
         guard canUseTableTools, let tab = active else { return }
-        let all = Set(tab.schema.map(\.name))
-        let inverted = all.subtracting(tab.visibleColumns)
-        editActive { $0.visibleColumns = inverted }
-        // Allow the user to invert an all-selected table and then choose a
-        // small subset; loading is deferred until at least one column returns.
-        guard !inverted.isEmpty, let id = activeID else { return }
-        perform("更新显示列…") { try await self.loadTable(id) }
+        let selected = columns.intersection(tab.schema.map(\.name))
+        guard !selected.isEmpty else { return }
+        editActive { $0.visibleColumns = selected; $0.page = 0 }
+        perform("更新显示列…") { try await self.loadTable(tab.id) }
     }
     func page(_ delta: Int) {
         guard canUseTableTools, let id = activeID else { return }

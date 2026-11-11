@@ -55,9 +55,9 @@ struct CatalogDatabaseView: View {
                 case .queries:
                     let queries = model.tabs.filter { $0.table == nil && $0.database == database }
                     ForEach(queries) { tab in
-                        Button { model.activeID = tab.id } label: { Label(tab.title, systemImage: "terminal").lineLimit(1).padding(.leading, 36).padding(.vertical, 4) }.buttonStyle(.plain)
+                        Button { model.activeID = tab.id } label: { Label(tab.title, systemImage: "terminal").lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 36).padding(.vertical, 4).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle())
                     }
-                    Button { model.newQuery(); model.editActive { $0.database = database } } label: { Label("新建查询", systemImage: "plus").padding(.leading, 36).padding(.vertical, 4) }.buttonStyle(.plain)
+                    Button { model.newQuery(); model.editActive { $0.database = database } } label: { Label("新建查询", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 36).padding(.vertical, 4).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle())
                     if queries.isEmpty { CatalogEmpty(text: "暂无查询标签", depth: 2) }
                 case .backups:
                     CatalogEmpty(text: "备份功能暂未启用", depth: 2)
@@ -110,8 +110,8 @@ private struct CatalogBranch: View {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9)).frame(width: 12)
                 Image(systemName: symbol).foregroundStyle(Color.accentColor).frame(width: 16)
                 Text(title); Spacer()
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).padding(.leading, CGFloat(depth * 13 + 12))
-        }.buttonStyle(.plain)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).padding(.leading, CGFloat(depth * 13 + 12)).contentShape(Rectangle())
+        }.buttonStyle(.plain).contentShape(Rectangle())
     }
 }
 
@@ -132,8 +132,9 @@ private struct CatalogObjectsView: View {
             ForEach(objects.filter { model.sidebarSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(model.sidebarSearch) || table?.localizedCaseInsensitiveContains(model.sidebarSearch) == true }) { object in
                 Button { model.inspectObject(object, database: database) } label: {
                     HStack(spacing: 5) { Image(systemName: kind.symbol).foregroundStyle(.secondary); Text(object.name).lineLimit(1); Spacer() }
-                        .padding(.leading, CGFloat(depth * 13 + 12)).padding(.vertical, 4)
-                }.buttonStyle(.plain).help(object.name + "\n" + object.detail).disabled(!model.canOperate)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, CGFloat(depth * 13 + 12)).padding(.vertical, 4).contentShape(Rectangle())
+                }.buttonStyle(.plain).contentShape(Rectangle()).help(object.name + "\n" + object.detail).disabled(!model.canOperate)
                     .contextMenu {
                         Button("查看定义") { model.inspectObject(object, database: database) }.disabled(object.sql.isEmpty || !model.canOperate)
                         Button("复制名称") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(object.name, forType: .string) }

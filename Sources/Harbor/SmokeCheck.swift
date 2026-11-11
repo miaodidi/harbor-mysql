@@ -40,6 +40,11 @@ import HarborCore
                 try require(model.active?.result.columns.contains { $0.name == "email" } == false, "Column visibility")
                 try require(model.active?.executedSQL.hasPrefix("SELECT *") == false, "Explicit hidden-column projection")
                 model.setColumn("email", visible: true); try await idle(model)
+                model.setColumns(["id", "name"]); try await idle(model)
+                try require(model.active?.result.columns.map(\.name) == ["id", "name"], "Bulk column selection")
+                model.setColumns([])
+                try require(model.active?.visibleColumns == Set(["id", "name"]), "Empty selection does not replace applied columns")
+                model.setColumns(Set(model.active!.schema.map(\.name))); try await idle(model)
                 model.applyFilter(nil, sort: nil); try await idle(model)
                 model.selectCell(row: 0, column: 1, openEditor: true)
                 try require(model.canEditCell, "Cell editor")
@@ -65,6 +70,7 @@ import HarborCore
                 try require(model.active?.executedSQL == "SELECT * FROM users WHERE 1 = 0", "Refresh preserves custom SQL")
                 model.restoreTableSQL(); try await idle(model)
                 try require(model.canUseTableTools && model.active?.result.rows.count == 8 && model.active?.executedSQL.hasPrefix("SELECT * FROM") == true, "Restore table tools")
+                model.editActive { $0.filterVisible = true }
                 try await Task.sleep(for: .milliseconds(500))
                 guard let window = NSApp.windows.first(where: { $0.contentView != nil && !$0.isSheet }), let content = window.contentView else { throw HarborError.message("No application window") }
                 let view = content.superview ?? content
@@ -76,6 +82,20 @@ import HarborCore
                 if let table = grid(in: view), let scroll = table.enclosingScrollView {
                     try require(scroll.contentView.bounds.minY + scroll.contentView.contentInsets.top <= table.rect(ofRow: 0).minY, "First row is visible below the header")
                 }
+                @MainActor func editor(in node: NSView) -> NSTextView? {
+                    if let text = node as? NSTextView, text.isEditable, text.string.hasPrefix("SELECT *") { return text }
+                    for child in node.subviews { if let found = editor(in: child) { return found } }; return nil
+                }
+                guard let text = editor(in: view) else { throw HarborError.message("Missing footer editor") }
+                try require(text.visibleRect.width > 0 && text.visibleRect.height > 0, "Footer text has visible bounds")
+                text.setSelectedRange(NSRange(location: 7, length: 0))
+                text.insertText("a", replacementRange: text.selectedRange())
+                try await Task.sleep(for: .milliseconds(100))
+                text.insertText("b", replacementRange: text.selectedRange())
+                try await Task.sleep(for: .milliseconds(100))
+                try require(text.selectedRange().location == 9 && model.active?.footerDraft.hasPrefix("SELECT ab*") == true, "Footer caret stays in middle across redraws")
+                model.editActive { $0.footerDraft = $0.executedSQL }
+                try await Task.sleep(for: .milliseconds(100))
                 guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw HarborError.message("Could not capture window") }
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
