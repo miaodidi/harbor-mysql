@@ -34,6 +34,10 @@ struct WorkspaceTab: Identifiable {
     @Published var connectedID: UUID?
     @Published var serverVersion = ""
     @Published var databases: [String] = []
+    /// Default database for new query tabs. This is separate from link state.
+    @Published var currentDatabase: String?
+    /// Several databases can be linked at once over one server connection.
+    @Published var linkedDatabases: Set<String> = []
     @Published var tables: [String: [TableReference]] = [:]
     @Published var expandedDatabases: Set<String> = []
     @Published var expandedCatalog: Set<String> = []
@@ -85,7 +89,7 @@ struct WorkspaceTab: Identifiable {
     func deleteProfile(_ profile: ConnectionProfile) {
         guard !busy else { return }
         perform("删除连接") {
-            if self.connectedID == profile.id { await self.session.disconnect(); self.connectedID = nil; self.databases = []; self.tables = [:] }
+            if self.connectedID == profile.id { await self.session.disconnect(); self.connectedID = nil; self.currentDatabase = nil; self.linkedDatabases = []; self.databases = []; self.tables = [:] }
             let updated = self.profiles.filter { $0.id != profile.id }
             try self.store.save(updated); try PasswordStore.delete(for: profile.id)
             self.profiles = updated; self.memoryPasswords[profile.id] = nil
@@ -99,7 +103,7 @@ struct WorkspaceTab: Identifiable {
     }
     func connect(_ profile: ConnectionProfile, password: String) {
         perform("正在连接 \(profile.name)…") {
-            self.connectedID = nil; self.databases = []; self.tables = [:]; self.expandedDatabases = []
+            self.connectedID = nil; self.currentDatabase = nil; self.linkedDatabases = []; self.databases = []; self.tables = [:]; self.expandedDatabases = []
             self.expandedCatalog = []; self.catalog = [:]; self.catalogErrors = [:]
             self.serverVersion = try await self.session.connect(profile, password: password)
             self.connectedID = profile.id
@@ -108,13 +112,19 @@ struct WorkspaceTab: Identifiable {
             self.tabs.removeAll { $0.table != nil }
             for i in self.tabs.indices { self.tabs[i].result = QueryResult(); self.tabs[i].status = ""; self.tabs[i].database = profile.database }
             self.activeID = self.tabs.first?.id
-            if !profile.database.isEmpty { self.expandedDatabases.insert(profile.database); self.tables[profile.database] = try await self.session.tables(in: profile.database) }
+            if !profile.database.isEmpty {
+                _ = try await self.session.execute("USE \(SQLBuilder.identifier(profile.database))")
+                self.currentDatabase = profile.database
+                self.linkedDatabases.insert(profile.database)
+                self.expandedDatabases.insert(profile.database)
+                self.tables[profile.database] = try await self.session.tables(in: profile.database)
+            }
         }
     }
     func disconnect() {
-        perform("断开连接") { await self.session.disconnect(); self.connectedID = nil; self.databases = []; self.tables = [:]; self.expandedDatabases = [] }
+        perform("断开连接") { await self.session.disconnect(); self.connectedID = nil; self.currentDatabase = nil; self.linkedDatabases = []; self.databases = []; self.tables = [:]; self.expandedDatabases = [] }
     }
-    func cancel() { Task { await session.disconnect(); connectedID = nil; activity = "连接已断开" } }
+    func cancel() { Task { await session.disconnect(); connectedID = nil; currentDatabase = nil; linkedDatabases = []; activity = "连接已断开" } }
 
     func perform(_ label: String, operation: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
@@ -126,12 +136,50 @@ struct WorkspaceTab: Identifiable {
         }
     }
     func toggleDatabase(_ database: String) {
-        if expandedDatabases.contains(database) { expandedDatabases.remove(database); return }
         guard canOperate else { return }
-        expandedDatabases.insert(database)
-        perform("读取数据库…") { self.tables[database] = try await self.session.tables(in: database) }
+        guard linkedDatabases.contains(database) else { return }
+        if expandedDatabases.contains(database) { expandedDatabases.remove(database) } else { expandedDatabases.insert(database) }
+    }
+    func selectDatabase(_ database: String) {
+        linkDatabase(database)
+    }
+    func linkDatabase(_ database: String) {
+        guard canOperate else { return }
+        if linkedDatabases.contains(database) { currentDatabase = database; expandedDatabases.insert(database); return }
+        perform("切换数据库 \(database)…") {
+            _ = try await self.session.execute("USE \(SQLBuilder.identifier(database))")
+            self.currentDatabase = database
+            self.linkedDatabases.insert(database)
+            self.expandedDatabases.insert(database)
+            self.tables[database] = try await self.session.tables(in: database)
+        }
+    }
+    func unlinkDatabase(_ database: String) {
+        guard canOperate, linkedDatabases.contains(database) else { return }
+        linkedDatabases.remove(database)
+        expandedDatabases.remove(database)
+        tables[database] = nil
+        let prefix = database + "\0"
+        catalog = catalog.filter { !$0.key.hasPrefix(prefix) }
+        catalogErrors = catalogErrors.filter { !$0.key.hasPrefix(prefix) }
+        expandedCatalog = expandedCatalog.filter { !$0.hasPrefix(prefix) }
+        let removedIDs = Set(tabs.filter { $0.table?.database == database }.map(\.id))
+        tabs.removeAll { removedIDs.contains($0.id) }
+        if let activeID, removedIDs.contains(activeID) { self.activeID = tabs.last?.id }
+        if currentDatabase == database { currentDatabase = linkedDatabases.first }
+    }
+    func refreshDatabase(_ database: String) {
+        guard canOperate, linkedDatabases.contains(database) else { return }
+        perform("刷新数据库…") {
+            self.tables[database] = try await self.session.tables(in: database)
+            self.catalog = self.catalog.filter { $0.key.hasPrefix(database + "\0") == false }
+            self.catalogErrors = self.catalogErrors.filter { $0.key.hasPrefix(database + "\0") == false }
+            self.expandedCatalog = self.expandedCatalog.filter { $0.hasPrefix(database + "\0") == false }
+        }
     }
     func openTable(_ table: TableReference) {
+        guard linkedDatabases.contains(table.database) else { linkDatabase(table.database); return }
+        currentDatabase = table.database
         if let existing = tabs.first(where: { $0.table == table }) { activeID = existing.id; return }
         guard canOperate else { return }
         let tab = WorkspaceTab(table: table, title: table.name, database: table.database)
@@ -169,7 +217,7 @@ struct WorkspaceTab: Identifiable {
         } else {
             perform("刷新数据库…") {
                 self.databases = try await self.session.databases()
-                for db in self.expandedDatabases { self.tables[db] = try await self.session.tables(in: db) }
+                if let db = self.currentDatabase { self.tables[db] = try await self.session.tables(in: db) }
                 self.catalog = [:]; self.catalogErrors = [:]; self.expandedCatalog = []
             }
         }
@@ -264,6 +312,18 @@ struct WorkspaceTab: Identifiable {
         if panel.runModal() == .OK, let url = panel.url {
             do { try (active.table == nil ? active.sql : active.executedSQL).write(to: url, atomically: true, encoding: .utf8) }
             catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func filterSuggestions(for tab: WorkspaceTab, column: String, query: String) async -> [String] {
+        guard let table = tab.table, linkedDatabases.contains(table.database),
+              tab.schema.contains(where: { $0.name == column }) else { return [] }
+        let pattern = query.replacingOccurrences(of: "!", with: "!!").replacingOccurrences(of: "%", with: "!%").replacingOccurrences(of: "_", with: "!_") + "%"
+        let sql = "SELECT DISTINCT \(SQLBuilder.identifier(column)) AS value FROM \(SQLBuilder.table(table)) WHERE CAST(\(SQLBuilder.identifier(column)) AS CHAR) LIKE \(SQLBuilder.literal(.text(pattern))) ESCAPE '!' ORDER BY \(SQLBuilder.identifier(column)) LIMIT 30"
+        guard let result = try? await session.execute(sql) else { return [] }
+        return result.rows.compactMap { row in
+            guard let value = row.first, value != .null else { return nil }
+            return value.display
         }
     }
 

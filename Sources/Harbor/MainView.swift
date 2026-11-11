@@ -1,5 +1,44 @@
 import SwiftUI
 import HarborCore
+import AppKit
+
+private struct SQLTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    var isEditable = true
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SQLTextEditor
+        init(_ parent: SQLTextEditor) { self.parent = parent }
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            if parent.text != view.string { parent.text = view.string }
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        let textView = NSTextView()
+        textView.delegate = context.coordinator; textView.isEditable = isEditable
+        textView.isRichText = false; textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textColor = .labelColor; textView.backgroundColor = .clear
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+        textView.string = text
+        scroll.documentView = textView
+        return scroll
+    }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let textView = scroll.documentView as? NSTextView else { return }
+        textView.isEditable = isEditable
+        // SwiftUI may redraw this view after every keystroke. Only replace the
+        // text when an external value changed, preserving the insertion point.
+        if textView.string != text {
+            let selection = textView.selectedRange()
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: min(selection.location, text.utf16.count), length: 0))
+        }
+    }
+}
 
 struct MainView: View {
     @EnvironmentObject private var model: AppModel
@@ -114,9 +153,27 @@ private struct SidebarView: View {
                             if model.connectedID == profile.id {
                                 ForEach(model.databases, id: \.self) { db in
                                     Button { model.toggleDatabase(db) } label: {
-                                        HStack(spacing: 5) { Image(systemName: model.expandedDatabases.contains(db) ? "chevron.down" : "chevron.right").font(.system(size: 9)); Image(systemName: "cylinder"); Text(db).lineLimit(1); Spacer() }.padding(.vertical, 5)
+                                        HStack(spacing: 5) {
+                                            Image(systemName: model.expandedDatabases.contains(db) ? "chevron.down" : "chevron.right").font(.system(size: 9))
+                                            Image(systemName: "cylinder").foregroundStyle(model.linkedDatabases.contains(db) ? Color.green : Color.secondary)
+                                            Text(db).foregroundStyle(model.linkedDatabases.contains(db) ? .primary : .secondary).lineLimit(1); Spacer()
+                                            if model.linkedDatabases.contains(db) { Circle().fill(.green).frame(width: 5, height: 5) }
+                                        }.padding(.vertical, 5)
                                     }.buttonStyle(.plain).padding(.leading, 12)
-                                    if model.expandedDatabases.contains(db) {
+                                    .simultaneousGesture(TapGesture(count: 2).onEnded { model.linkDatabase(db) })
+                                    .contextMenu {
+                                        if model.linkedDatabases.contains(db) {
+                                            Button("设为当前数据库") { model.selectDatabase(db) }.disabled(model.busy || model.currentDatabase == db)
+                                            Button("断开数据库") { model.unlinkDatabase(db) }.disabled(model.busy)
+                                        } else {
+                                            Button("连接数据库") { model.linkDatabase(db) }.disabled(model.busy)
+                                        }
+                                        Button("新建查询") { model.newQuery(); model.editActive { $0.database = db } }.disabled(model.busy)
+                                        Button("刷新") { model.refreshDatabase(db) }.disabled(model.busy || !model.linkedDatabases.contains(db))
+                                        Divider()
+                                        Button("复制数据库名称") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(db, forType: .string) }
+                                    }
+                                    if model.expandedDatabases.contains(db) && model.linkedDatabases.contains(db) {
                                         CatalogDatabaseView(database: db)
                                     }
                                 }
@@ -201,8 +258,8 @@ private struct WorkspaceView: View {
                     Button("保存并刷新") { model.saveFooter() }.buttonStyle(.borderedProminent).disabled(!model.canOperate || tab.footerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(tab.footerDraft, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("复制 SQL")
                 }.font(.system(size: 11)).controlSize(.small)
-                TextEditor(text: Binding(get: { tab.footerDraft }, set: { value in model.editActive { $0.footerDraft = value } }))
-                    .font(.system(size: 12, design: .monospaced)).frame(height: 58).disabled(model.busy)
+                SQLTextEditor(text: Binding(get: { tab.footerDraft }, set: { value in model.editActive { $0.footerDraft = value } }), isEditable: !model.busy)
+                    .frame(height: 58)
                     .accessibilityLabel("底部 SQL 编辑器")
             } else {
                 Text(tab.executedSQL.isEmpty ? "等待查询…" : tab.executedSQL)
@@ -231,13 +288,35 @@ private struct FilterPanel: View {
     @State private var sortField = ""
     @State private var direction = SortDirection.ascending
     @State private var enabled = false
+    @State private var suggestions: [String] = []
+    @State private var showingSuggestions = false
     var body: some View {
         VStack(spacing: 8) {
             HStack {
                 Toggle("筛选", isOn: $enabled).toggleStyle(.checkbox)
                 Picker("字段", selection: $field) { ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 130)
                 Picker("条件", selection: $operation) { ForEach(FilterOperator.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(width: 105)
-                TextField("筛选值", text: $value).textFieldStyle(.roundedBorder).disabled(operation == .isNull || operation == .isNotNull)
+                TextField("筛选值", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 190)
+                    .disabled(operation == .isNull || operation == .isNotNull)
+                    .onTapGesture { showingSuggestions = !suggestions.isEmpty }
+                    .onChange(of: value) { _, newValue in refreshSuggestions(newValue) }
+                    .popover(isPresented: $showingSuggestions, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("建议值").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 7)
+                            Divider()
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(suggestions, id: \.self) { suggestion in
+                                        Button { value = suggestion; showingSuggestions = false } label: {
+                                            Text(suggestion).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 6)
+                                        }.buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }.frame(width: 220, height: min(CGFloat(max(80, suggestions.count * 30 + 34)), 220))
+                    }
             }
             HStack {
                 Text("排序").foregroundStyle(.secondary)
@@ -248,10 +327,22 @@ private struct FilterPanel: View {
                 Button("应用") { model.applyFilter(enabled ? FilterRule(column: field, operation: operation, value: value) : nil, sort: sortField.isEmpty ? nil : SortRule(column: sortField, direction: direction)) }.buttonStyle(.borderedProminent)
             }
         }.controlSize(.small).font(.system(size: 12)).padding(12).background(Color(nsColor: .controlBackgroundColor)).disabled(!model.canUseTableTools)
-        .onAppear { field = tab.filter?.column ?? tab.schema.first?.name ?? ""; operation = tab.filter?.operation ?? .equals; value = tab.filter?.value ?? ""; enabled = tab.filter != nil; syncSort() }
+        .onAppear { field = tab.filter?.column ?? tab.schema.first?.name ?? ""; operation = tab.filter?.operation ?? .equals; value = tab.filter?.value ?? ""; enabled = tab.filter != nil; syncSort(); refreshSuggestions(value) }
         .onChange(of: tab.sort) { _, _ in syncSort() }
+        .onChange(of: field) { _, _ in refreshSuggestions(value) }
     }
     private func syncSort() { sortField = tab.sort?.column ?? ""; direction = tab.sort?.direction ?? .ascending }
+    private func refreshSuggestions(_ query: String) {
+        guard operation != .isNull, operation != .isNotNull, !field.isEmpty, model.canUseTableTools else { suggestions = []; return }
+        let expected = query
+        Task {
+            try? await Task.sleep(for: .milliseconds(160))
+            let values = await model.filterSuggestions(for: tab, column: field, query: expected)
+            guard value == expected else { return }
+            suggestions = values
+            showingSuggestions = !values.isEmpty
+        }
+    }
 }
 
 private struct CellEditor: View {

@@ -6,6 +6,8 @@ extension AppModel {
         database + "\0" + (table ?? "") + "\0" + (kind?.rawValue ?? "")
     }
     func toggleCatalog(_ database: String, table: String? = nil, kind: CatalogKind? = nil) {
+        guard linkedDatabases.contains(database) else { linkDatabase(database); return }
+        currentDatabase = database
         let key = catalogKey(database, table: table, kind: kind)
         if expandedCatalog.contains(key) { expandedCatalog.remove(key); return }
         guard canOperate else { return }
@@ -14,6 +16,7 @@ extension AppModel {
         loadCatalog(database, table: table, kind: kind)
     }
     func loadCatalog(_ database: String, table: String? = nil, kind: CatalogKind) {
+        guard linkedDatabases.contains(database) else { return }
         let key = catalogKey(database, table: table, kind: kind)
         perform("读取\(kind.rawValue)…") {
             do { self.catalog[key] = try await self.session.objects(in: database, table: table, kind: kind); self.catalogErrors[key] = nil }
@@ -21,6 +24,8 @@ extension AppModel {
         }
     }
     func inspectObject(_ object: CatalogObject, database: String) {
+        guard linkedDatabases.contains(database) else { linkDatabase(database); return }
+        currentDatabase = database
         guard canOperate else { return }
         var tab = WorkspaceTab(title: object.name, database: database); tab.sql = object.sql
         tabs.append(tab); activeID = tab.id; runQuery()
@@ -34,6 +39,13 @@ struct CatalogDatabaseView: View {
         ForEach(CatalogKind.databaseKinds, id: \.self) { kind in
             let key = model.catalogKey(database, kind: kind)
             CatalogBranch(title: kind.rawValue, symbol: kind.symbol, expanded: model.expandedCatalog.contains(key), depth: 1) { model.toggleCatalog(database, kind: kind) }
+                .contextMenu {
+                    Button("刷新\(kind.rawValue)") {
+                        if kind == .tables || kind == .views { model.refreshDatabase(database) }
+                        else if kind != .queries && kind != .backups { model.loadCatalog(database, kind: kind) }
+                    }.disabled(model.busy || kind == .queries || kind == .backups)
+                    Button("复制名称") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(kind.rawValue, forType: .string) }
+                }
             if model.expandedCatalog.contains(key) {
                 switch kind {
                 case .tables, .views:
@@ -71,6 +83,12 @@ private struct CatalogTableView: View {
             }.buttonStyle(.plain).disabled(model.busy)
         }.padding(.leading, 25)
             .background(model.active?.table == table ? Color.accentColor.opacity(0.16) : Color.clear).clipShape(RoundedRectangle(cornerRadius: 5)).help(table.name)
+            .contextMenu {
+                Button("打开表") { model.openTable(table) }.disabled(model.busy)
+                Button("刷新表目录") { model.refreshDatabase(table.database) }.disabled(model.busy)
+                Divider()
+                Button("复制表名") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(table.name, forType: .string) }
+            }
         if model.expandedCatalog.contains(key) {
             ForEach(CatalogKind.tableKinds, id: \.self) { kind in
                 let child = model.catalogKey(table.database, table: table.name, kind: kind)
@@ -117,6 +135,10 @@ private struct CatalogObjectsView: View {
                     HStack(spacing: 5) { Image(systemName: kind.symbol).foregroundStyle(.secondary); Text(object.name).lineLimit(1); Spacer() }
                         .padding(.leading, CGFloat(depth * 13 + 12)).padding(.vertical, 4)
                 }.buttonStyle(.plain).help(object.name + "\n" + object.detail).disabled(!model.canOperate)
+                    .contextMenu {
+                        Button("查看定义") { model.inspectObject(object, database: database) }.disabled(object.sql.isEmpty || !model.canOperate)
+                        Button("复制名称") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(object.name, forType: .string) }
+                    }
             }
             if objects.isEmpty { CatalogEmpty(text: "无\(kind.rawValue)", depth: depth) }
         } else { CatalogEmpty(text: model.busy ? "正在读取…" : "点击重新展开以读取", depth: depth) }

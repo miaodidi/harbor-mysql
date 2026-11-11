@@ -15,6 +15,12 @@ import HarborCore
                 try await idle(model)
                 model.toggleCatalog("harbor_preview", kind: .tables)
                 model.toggleCatalog("harbor_preview", table: "users")
+                if model.databases.contains("mysql") {
+                    model.linkDatabase("mysql"); try await idle(model)
+                    try require(model.linkedDatabases.contains("harbor_preview") && model.linkedDatabases.contains("mysql"), "Multiple linked databases")
+                    model.unlinkDatabase("mysql")
+                    try require(!model.linkedDatabases.contains("mysql"), "Unlink database")
+                }
                 for kind in CatalogKind.tableKinds {
                     model.toggleCatalog("harbor_preview", table: "users", kind: kind); try await idle(model)
                     let key = model.catalogKey("harbor_preview", table: "users", kind: kind)
@@ -23,6 +29,8 @@ import HarborCore
                 }
                 model.openTable(TableReference(database: "harbor_preview", name: "users")); try await idle(model)
                 try require(model.active?.result.rows.count == 8, "Table open")
+                let suggestions = await model.filterSuggestions(for: model.active!, column: "status", query: "act")
+                try require(suggestions.contains("active"), "Filter suggestions")
                 try require(model.active?.executedSQL.hasPrefix("SELECT * FROM") == true, "Default SELECT star")
                 model.sort(column: "id", direction: .ascending); try await idle(model)
                 try require(model.active?.result.rows.first?.first?.text == "101", "Ascending sort")
