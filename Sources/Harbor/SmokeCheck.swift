@@ -101,7 +101,8 @@ import HarborCore
                 try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
                 model.newQuery(); model.editActive { $0.sql = "SELECT id,name FROM users WHERE 1=0" }; model.runQuery(); try await idle(model)
                 try require(model.active?.result.columns.count == 2 && model.active?.result.rows.isEmpty == true, "Empty result headers")
-                try "PASS: catalog hierarchy, SELECT star, footer apply/error/drafts/refresh/reset, read-only custom result, connection, table, sort, filter, columns, editor and query\n".write(toFile: output + ".txt", atomically: true, encoding: .utf8)
+                try await InputSmokeCheck.run(model, view: view, tableID: tableID!)
+                try "PASS: all text inputs and caret/selection/undo/composition, catalog hierarchy, SELECT star, footer apply/error/drafts/refresh/reset, read-only custom result, connection, table, sort, filter, columns, editor and query\n".write(toFile: output + ".txt", atomically: true, encoding: .utf8)
             } catch {
                 try? "FAIL: \(error.localizedDescription)\n".write(toFile: output + ".txt", atomically: true, encoding: .utf8)
             }

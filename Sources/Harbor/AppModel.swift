@@ -73,6 +73,12 @@ struct WorkspaceTab: Identifiable {
     func editTab(_ id: UUID, _ edit: (inout WorkspaceTab) -> Void) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }; edit(&tabs[index])
     }
+    // Read the live tab instead of a View's captured value, and target the
+    // originating tab even if focus changes before a delegate callback arrives.
+    func textBinding(for id: UUID, keyPath: WritableKeyPath<WorkspaceTab, String>) -> Binding<String> {
+        Binding(get: { self.tabs.first { $0.id == id }?[keyPath: keyPath] ?? "" },
+                set: { value in self.editTab(id) { $0[keyPath: keyPath] = value } })
+    }
     func password(for profile: ConnectionProfile) throws -> String {
         if let value = memoryPasswords[profile.id] { return value }
         return profile.rememberPassword ? try PasswordStore.read(for: profile.id) ?? "" : ""

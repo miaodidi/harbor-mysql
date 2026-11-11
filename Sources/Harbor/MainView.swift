@@ -2,53 +2,6 @@ import SwiftUI
 import HarborCore
 import AppKit
 
-private struct SQLTextEditor: NSViewRepresentable {
-    @Binding var text: String
-    var isEditable = true
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: SQLTextEditor
-        init(_ parent: SQLTextEditor) { self.parent = parent }
-        func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView else { return }
-            if parent.text != view.string { parent.text = view.string }
-        }
-    }
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        let textView = NSTextView()
-        textView.delegate = context.coordinator; textView.isEditable = isEditable
-        textView.isRichText = false; textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textColor = .labelColor; textView.backgroundColor = .clear
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: 58); textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.frame = NSRect(x: 0, y: 0, width: 600, height: 58)
-        textView.string = text
-        scroll.documentView = textView
-        return scroll
-    }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        // Keep the coordinator's binding and editability in sync with SwiftUI.
-        // The footer is redrawn after each keystroke, so retaining the first
-        // representable value here can otherwise send later edits to an old
-        // tab and make the insertion point appear to jump.
-        context.coordinator.parent = self
-        guard let textView = scroll.documentView as? NSTextView else { return }
-        textView.isEditable = isEditable
-        // SwiftUI may redraw this view after every keystroke. Only replace the
-        // text when an external value changed, preserving the insertion point.
-        if textView.string != text {
-            let selection = textView.selectedRange()
-            textView.string = text
-            textView.setSelectedRange(NSRange(location: min(selection.location, text.utf16.count), length: 0))
-        }
-    }
-}
-
 struct MainView: View {
     @EnvironmentObject private var model: AppModel
     var body: some View {
@@ -247,8 +200,8 @@ private struct WorkspaceView: View {
                 Spacer()
                 Button("导出 SQL") { model.exportSQL() }
             }.controlSize(.small).padding(10)
-            TextEditor(text: Binding(get: { tab.sql }, set: { value in model.editActive { $0.sql = value } }))
-                .font(.system(size: 13, design: .monospaced)).scrollContentBackground(.hidden).padding(.horizontal, 8).frame(height: 160)
+            StableTextEditor(text: model.textBinding(for: tab.id, keyPath: \.sql), fontSize: 13, minimumHeight: 160, editorID: "query-sql")
+                .padding(.horizontal, 8).frame(height: 160)
         }
     }
     private var sqlFooter: some View {
@@ -262,7 +215,7 @@ private struct WorkspaceView: View {
                     Button("保存并刷新") { model.saveFooter() }.buttonStyle(.borderedProminent).disabled(!model.canOperate || tab.footerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(tab.footerDraft, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("复制 SQL")
                 }.font(.system(size: 11)).controlSize(.small)
-                SQLTextEditor(text: Binding(get: { tab.footerDraft }, set: { value in model.editActive { $0.footerDraft = value } }), isEditable: !model.busy)
+                StableTextEditor(text: model.textBinding(for: tab.id, keyPath: \.footerDraft), isEditable: !model.busy, editorID: "footer-sql")
                     .frame(height: 58)
                     .accessibilityLabel("底部 SQL 编辑器")
             } else {
@@ -405,8 +358,8 @@ private struct CellEditor: View {
                 Button { model.editActive { $0.editorVisible = false } } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
             }
             if tab.selectedRow != nil {
-                TextEditor(text: Binding(get: { tab.editValue }, set: { value in model.editActive { $0.editValue = value } }))
-                    .font(.system(size: 12, design: .monospaced)).frame(height: 70).disabled(!model.canEditCell || tab.editNull)
+                StableTextEditor(text: model.textBinding(for: tab.id, keyPath: \.editValue), isEditable: model.canEditCell && !tab.editNull, minimumHeight: 70, editorID: "cell-value")
+                    .frame(height: 70)
                 HStack {
                     Toggle("NULL", isOn: Binding(get: { tab.editNull }, set: { value in model.editActive { $0.editNull = value } })).disabled(!model.canEditCell || model.editableColumn?.nullable != true)
                     Text(model.canEditCell ? "按主键定位，保存前确认 SQL" : "只读：需要主键列；主键、二进制和生成列不能编辑").foregroundStyle(.secondary).lineLimit(2)
