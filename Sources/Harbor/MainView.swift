@@ -23,6 +23,10 @@ private struct SQLTextEditor: NSViewRepresentable {
         textView.isRichText = false; textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textColor = .labelColor; textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 4, height: 4)
+        textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 58); textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.frame = NSRect(x: 0, y: 0, width: 600, height: 58)
         textView.string = text
         scroll.documentView = textView
         return scroll
@@ -225,6 +229,8 @@ private struct WorkspaceView: View {
             Button { model.editActive { $0.editorVisible.toggle() } } label: { Label("编辑器", systemImage: "square.and.pencil") }.tint(tab.editorVisible ? .accentColor : nil)
             Button { model.editActive { $0.filterVisible.toggle() } } label: { Label("筛选 & 排序", systemImage: "line.3.horizontal.decrease") }.tint(tab.filterVisible ? .accentColor : nil)
             Menu {
+                Button("反转选择") { model.invertColumns() }
+                Divider()
                 ForEach(tab.schema) { column in
                     Toggle(column.name, isOn: Binding(get: { tab.visibleColumns.contains(column.name) }, set: { model.setColumn(column.name, visible: $0) }))
                         .disabled(!model.canUseTableTools || (tab.visibleColumns.count == 1 && tab.visibleColumns.contains(column.name)))
@@ -288,17 +294,18 @@ private struct FilterPanel: View {
     @State private var sortField = ""
     @State private var direction = SortDirection.ascending
     @State private var enabled = false
+    @State private var sortEnabled = false
     @State private var suggestions: [String] = []
     @State private var showingSuggestions = false
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Toggle("筛选", isOn: $enabled).toggleStyle(.checkbox)
-                Picker("字段", selection: $field) { ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 130)
-                Picker("条件", selection: $operation) { ForEach(FilterOperator.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(width: 105)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                Toggle("筛选", isOn: $enabled).toggleStyle(.checkbox).frame(width: 76, alignment: .leading)
+                Picker("字段", selection: $field) { ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 150)
+                Picker("条件", selection: $operation) { ForEach(FilterOperator.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(width: 120)
                 TextField("筛选值", text: $value)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 190)
+                    .frame(width: 240)
                     .disabled(operation == .isNull || operation == .isNotNull)
                     .onTapGesture { showingSuggestions = !suggestions.isEmpty }
                     .onChange(of: value) { _, newValue in refreshSuggestions(newValue) }
@@ -317,21 +324,22 @@ private struct FilterPanel: View {
                             }
                         }.frame(width: 220, height: min(CGFloat(max(80, suggestions.count * 30 + 34)), 220))
                     }
-            }
-            HStack {
-                Text("排序").foregroundStyle(.secondary)
-                Picker("排序字段", selection: $sortField) { Text("不排序").tag(""); ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 140)
-                Picker("方向", selection: $direction) { Text("升序").tag(SortDirection.ascending); Text("降序").tag(SortDirection.descending) }.labelsHidden().frame(width: 90)
                 Spacer()
-                Button("清除") { enabled = false; value = ""; sortField = ""; model.applyFilter(nil, sort: nil) }
-                Button("应用") { model.applyFilter(enabled ? FilterRule(column: field, operation: operation, value: value) : nil, sort: sortField.isEmpty ? nil : SortRule(column: sortField, direction: direction)) }.buttonStyle(.borderedProminent)
             }
-        }.controlSize(.small).font(.system(size: 12)).padding(12).background(Color(nsColor: .controlBackgroundColor)).disabled(!model.canUseTableTools)
-        .onAppear { field = tab.filter?.column ?? tab.schema.first?.name ?? ""; operation = tab.filter?.operation ?? .equals; value = tab.filter?.value ?? ""; enabled = tab.filter != nil; syncSort(); refreshSuggestions(value) }
+            HStack(spacing: 9) {
+                Toggle("排序", isOn: $sortEnabled).toggleStyle(.checkbox).frame(width: 76, alignment: .leading)
+                Picker("排序字段", selection: $sortField) { Text("选择字段").tag(""); ForEach(tab.schema) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 150).disabled(!sortEnabled)
+                Picker("方向", selection: $direction) { Text("升序").tag(SortDirection.ascending); Text("降序").tag(SortDirection.descending) }.labelsHidden().frame(width: 120).disabled(!sortEnabled)
+                Spacer()
+                Button("清除") { enabled = false; value = ""; sortEnabled = false; sortField = ""; model.applyFilter(nil, sort: nil) }
+                Button("应用") { model.applyFilter(enabled ? FilterRule(column: field, operation: operation, value: value) : nil, sort: sortEnabled && !sortField.isEmpty ? SortRule(column: sortField, direction: direction) : nil) }.buttonStyle(.borderedProminent)
+            }
+        }.controlSize(.small).font(.system(size: 12)).padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 88, maxHeight: 104, alignment: .leading).background(Color(nsColor: .controlBackgroundColor)).disabled(!model.canUseTableTools)
+        .onAppear { field = tab.filter?.column ?? tab.schema.first?.name ?? ""; operation = tab.filter?.operation ?? .equals; value = tab.filter?.value ?? ""; enabled = tab.filter != nil; sortEnabled = tab.sort != nil; syncSort(); refreshSuggestions(value) }
         .onChange(of: tab.sort) { _, _ in syncSort() }
         .onChange(of: field) { _, _ in refreshSuggestions(value) }
     }
-    private func syncSort() { sortField = tab.sort?.column ?? ""; direction = tab.sort?.direction ?? .ascending }
+    private func syncSort() { sortField = tab.sort?.column ?? ""; direction = tab.sort?.direction ?? .ascending; sortEnabled = tab.sort != nil }
     private func refreshSuggestions(_ query: String) {
         guard operation != .isNull, operation != .isNotNull, !field.isEmpty, model.canUseTableTools else { suggestions = []; return }
         let expected = query

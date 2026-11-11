@@ -74,14 +74,13 @@ private struct CatalogTableView: View {
     let table: TableReference
     var body: some View {
         let key = model.catalogKey(table.database, table: table.name)
-        HStack(spacing: 3) {
-            Button { model.toggleCatalog(table.database, table: table.name) } label: {
-                Image(systemName: model.expandedCatalog.contains(key) ? "chevron.down" : "chevron.right").font(.system(size: 9)).frame(width: 14, height: 25)
-            }.buttonStyle(.plain).accessibilityLabel("展开 \(table.name)")
-            Button { model.openTable(table) } label: {
-                Label(table.name, systemImage: table.isView ? "eyeglasses" : "tablecells").lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
-            }.buttonStyle(.plain).disabled(model.busy)
-        }.padding(.leading, 25)
+        HStack(spacing: 5) {
+            Image(systemName: model.expandedCatalog.contains(key) ? "chevron.down" : "chevron.right").font(.system(size: 9)).frame(width: 18, height: 25)
+            Label(table.name, systemImage: table.isView ? "eyeglasses" : "tablecells").lineLimit(1)
+            Spacer()
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 25).contentShape(Rectangle())
+            .onTapGesture { model.toggleCatalog(table.database, table: table.name) }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { model.openTable(table) })
             .background(model.active?.table == table ? Color.accentColor.opacity(0.16) : Color.clear).clipShape(RoundedRectangle(cornerRadius: 5)).help(table.name)
             .contextMenu {
                 Button("打开表") { model.openTable(table) }.disabled(model.busy)
@@ -111,7 +110,7 @@ private struct CatalogBranch: View {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9)).frame(width: 12)
                 Image(systemName: symbol).foregroundStyle(Color.accentColor).frame(width: 16)
                 Text(title); Spacer()
-            }.padding(.vertical, 5).padding(.leading, CGFloat(depth * 13 + 12))
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).padding(.leading, CGFloat(depth * 13 + 12))
         }.buttonStyle(.plain)
     }
 }
