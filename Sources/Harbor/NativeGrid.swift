@@ -35,9 +35,14 @@ struct NativeGrid: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator; coordinator.parent = self
         guard let table = coordinator.table else { return }
+        coordinator.updating = true
+        defer { coordinator.updating = false }
         let signature = result.columns.map { $0.name + "\0" + $0.type }
         if signature != coordinator.signature {
             coordinator.signature = signature
+            // AppKit may synchronously request old row views while columns are replaced.
+            // Invalidate cached row counts before changing the column collection.
+            table.reloadData()
             let oldWidths = Dictionary(table.tableColumns.map { ($0.identifier.rawValue, $0.width) }, uniquingKeysWith: { a, _ in a })
             for c in table.tableColumns { table.removeTableColumn(c) }
             let number = NSTableColumn(identifier: .init("row-number")); number.title = "#"; number.width = 42; number.minWidth = 35; table.addTableColumn(number)
@@ -57,7 +62,11 @@ struct NativeGrid: NSViewRepresentable {
         table.headerView?.needsDisplay = true
         if coordinator.resultID != result.id {
             coordinator.resultID = result.id; coordinator.selectedCell = nil; table.deselectAll(nil); table.reloadData()
-            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+            // The floating header is represented by a top content inset. An origin
+            // of zero scrolls the first rows under it; include that inset on reset.
+            scroll.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: -scroll.contentView.contentInsets.top))
+            scroll.reflectScrolledClipView(scroll.contentView)
         }
     }
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -66,11 +75,13 @@ struct NativeGrid: NSViewRepresentable {
         var signature: [String] = []
         var resultID: UUID?
         var selectedCell: (row: Int, column: Int)?
+        var updating = false
         private var menuActions: [MenuAction] = []
         init(_ parent: NativeGrid) { self.parent = parent }
         func numberOfRows(in tableView: NSTableView) -> Int { parent.result.rows.count }
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let tableColumn, let index = tableView.tableColumns.firstIndex(of: tableColumn) else { return nil }
+            guard parent.result.rows.indices.contains(row), index == 0 || parent.result.rows[row].indices.contains(index - 1) else { return nil }
             let identifier = NSUserInterfaceItemIdentifier("data-cell")
             let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTableCellView ?? makeCell(identifier)
             let value: CellValue = index == 0 ? .text(String(row+1)) : parent.result.rows[row][index-1]
@@ -90,7 +101,7 @@ struct NativeGrid: NSViewRepresentable {
         @objc func clicked() { select(open: false) }
         @objc func doubleClicked() { select(open: true) }
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard let table, table.selectedRow >= 0, !parent.result.columns.isEmpty else { return }
+            guard !updating, let table, table.selectedRow >= 0, !parent.result.columns.isEmpty else { return }
             let column = min(selectedCell?.column ?? 0, parent.result.columns.count - 1)
             selectedCell = (table.selectedRow, column)
             parent.onSelect(table.selectedRow, column, false)

@@ -39,7 +39,16 @@ import HarborCore
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
-        Task { await model.session.shutdown(); sender.reply(toApplicationShouldTerminate: true) }
+        let session = model.session
+        // AppKit's termination loop can suspend main-actor tasks. Close NIO off
+        // that actor and deliver the reply through AppKit's run loop.
+        Task.detached {
+            await session.shutdown()
+            RunLoop.main.perform(inModes: [.common]) {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
         return .terminateLater
     }
 }

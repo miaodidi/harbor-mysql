@@ -17,6 +17,8 @@ final class SQLBuilderTests: XCTestCase {
         XCTAssertFalse(try SQLBuilder.select(table: table, columns: ["id"]).contains("ORDER BY"))
         XCTAssertThrowsError(try SQLBuilder.select(table: table, columns: []))
         XCTAssertThrowsError(try SQLBuilder.select(table: table, columns: ["id"], page: -1))
+        XCTAssertEqual(try SQLBuilder.select(table: table, columns: ["id", "name"], allColumns: true), "SELECT * FROM `demo`.`users` LIMIT 0, 100;")
+        XCTAssertEqual(try SQLBuilder.select(table: table, columns: ["id"], allColumns: false), "SELECT `id` FROM `demo`.`users` LIMIT 0, 100;")
     }
     func testNullAndContainsFilters() throws {
         let table = TableReference(database: "demo", name: "users")

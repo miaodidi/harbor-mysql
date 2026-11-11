@@ -6,7 +6,7 @@ struct MainView: View {
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
-                SidebarView().frame(minWidth: 185, idealWidth: 210, maxWidth: 240)
+                SidebarView().frame(minWidth: 185, idealWidth: 260, maxWidth: 380)
                 VStack(spacing: 0) {
                     if !model.tabs.isEmpty { tabStrip; Divider() }
                     if let tab = model.active { WorkspaceView(tab: tab).id(tab.id) }
@@ -117,13 +117,7 @@ private struct SidebarView: View {
                                         HStack(spacing: 5) { Image(systemName: model.expandedDatabases.contains(db) ? "chevron.down" : "chevron.right").font(.system(size: 9)); Image(systemName: "cylinder"); Text(db).lineLimit(1); Spacer() }.padding(.vertical, 5)
                                     }.buttonStyle(.plain).padding(.leading, 12)
                                     if model.expandedDatabases.contains(db) {
-                                        ForEach((model.tables[db] ?? []).filter { model.sidebarSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(model.sidebarSearch) }) { table in
-                                            Button { model.openTable(table) } label: {
-                                                Label(table.name, systemImage: table.isView ? "rectangle.on.rectangle" : "tablecells")
-                                                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5).padding(.leading, 30).padding(.trailing, 4)
-                                                    .background(model.active?.table == table ? Color.accentColor.opacity(0.16) : Color.clear).clipShape(RoundedRectangle(cornerRadius: 5))
-                                            }.buttonStyle(.plain).help(table.name).disabled(model.busy)
-                                        }
+                                        CatalogDatabaseView(database: db)
                                     }
                                 }
                             }
@@ -154,7 +148,7 @@ private struct WorkspaceView: View {
                 HStack { Label(tab.table?.name ?? "查询结果", systemImage: "tablecells"); Spacer(); Text(tab.status).foregroundStyle(.secondary) }.font(.system(size: 11)).padding(.horizontal, 12).frame(height: 31)
                 Divider()
                 ZStack {
-                    NativeGrid(result: tab.result, sort: tab.sort, sortable: tab.table != nil && model.canOperate,
+                    NativeGrid(result: tab.result, sort: tab.sort, sortable: tab.table != nil && model.canUseTableTools,
                         onSort: { model.sort(column: $0, direction: $1) }, onSelect: { model.selectCell(row: $0, column: $1, openEditor: $2) })
                     if tab.result.rows.isEmpty && !model.busy {
                         Text(tab.executedSQL.isEmpty ? "执行查询后，结果将显示在这里" : tab.result.columns.isEmpty ? "语句已执行" : "没有符合条件的数据")
@@ -164,7 +158,7 @@ private struct WorkspaceView: View {
                 if tab.editorVisible && tab.table != nil { Divider(); CellEditor(tab: tab) }
                 Divider()
                 sqlFooter
-                if tab.table != nil { Divider(); pagination }
+                if tab.table != nil && tab.customSQL == nil { Divider(); pagination }
             }.frame(minWidth: 490, maxWidth: .infinity)
             if model.showInspector && tab.table != nil { InspectorView(tab: tab).frame(minWidth: 176, idealWidth: 190, maxWidth: 220) }
         }.background(Color(nsColor: .textBackgroundColor))
@@ -176,11 +170,11 @@ private struct WorkspaceView: View {
             Menu {
                 ForEach(tab.schema) { column in
                     Toggle(column.name, isOn: Binding(get: { tab.visibleColumns.contains(column.name) }, set: { model.setColumn(column.name, visible: $0) }))
-                        .disabled(!model.canOperate || (tab.visibleColumns.count == 1 && tab.visibleColumns.contains(column.name)))
+                        .disabled(!model.canUseTableTools || (tab.visibleColumns.count == 1 && tab.visibleColumns.contains(column.name)))
                 }
             } label: { Label("列", systemImage: "rectangle.split.3x1") }.fixedSize()
             Spacer()
-        }.controlSize(.small).padding(.horizontal, 12).frame(height: 44).background(Color(nsColor: .controlBackgroundColor))
+        }.disabled(!model.canUseTableTools).controlSize(.small).padding(.horizontal, 12).frame(height: 44).background(Color(nsColor: .controlBackgroundColor))
     }
     private var queryEditor: some View {
         VStack(spacing: 0) {
@@ -197,11 +191,23 @@ private struct WorkspaceView: View {
         }
     }
     private var sqlFooter: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "terminal").foregroundStyle(Color.accentColor)
-            Text(tab.executedSQL.isEmpty ? "等待查询…" : tab.executedSQL)
-                .font(.system(size: 11, design: .monospaced)).lineLimit(3).textSelection(.enabled).help(tab.executedSQL).frame(maxWidth: .infinity, alignment: .leading)
-            Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(tab.executedSQL, forType: .string) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.plain).help("复制完整 SQL").disabled(tab.executedSQL.isEmpty)
+        VStack(alignment: .leading, spacing: 6) {
+            if tab.table != nil {
+                HStack(spacing: 8) {
+                    Label(tab.customSQL == nil ? "实时 SQL" : "自定义 SQL · 结果只读", systemImage: "terminal").foregroundStyle(Color.accentColor)
+                    if tab.footerDirty { Text("未保存").foregroundStyle(.orange) }
+                    Spacer()
+                    if tab.customSQL != nil || tab.footerDirty { Button("恢复表浏览") { model.restoreTableSQL() }.disabled(!model.canOperate) }
+                    Button("保存并刷新") { model.saveFooter() }.buttonStyle(.borderedProminent).disabled(!model.canOperate || tab.footerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(tab.footerDraft, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("复制 SQL")
+                }.font(.system(size: 11)).controlSize(.small)
+                TextEditor(text: Binding(get: { tab.footerDraft }, set: { value in model.editActive { $0.footerDraft = value } }))
+                    .font(.system(size: 12, design: .monospaced)).frame(height: 58).disabled(model.busy)
+                    .accessibilityLabel("底部 SQL 编辑器")
+            } else {
+                Text(tab.executedSQL.isEmpty ? "等待查询…" : tab.executedSQL)
+                    .font(.system(size: 11, design: .monospaced)).lineLimit(3).textSelection(.enabled).help(tab.executedSQL).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }.padding(10).background(Color(nsColor: .controlBackgroundColor))
     }
     private var pagination: some View {
@@ -209,9 +215,9 @@ private struct WorkspaceView: View {
             Text("本页 \(tab.result.rows.count) 行").foregroundStyle(.secondary)
             Spacer()
             Text("每页 \(tab.pageSize) 行").foregroundStyle(.secondary)
-            Button { model.page(-1) } label: { Image(systemName: "chevron.left") }.disabled(!model.canOperate || tab.page == 0)
+            Button { model.page(-1) } label: { Image(systemName: "chevron.left") }.disabled(!model.canUseTableTools || tab.page == 0)
             Text("第 \(tab.page+1) 页").monospacedDigit()
-            Button { model.page(1) } label: { Image(systemName: "chevron.right") }.disabled(!model.canOperate || !tab.canNext)
+            Button { model.page(1) } label: { Image(systemName: "chevron.right") }.disabled(!model.canUseTableTools || !tab.canNext)
         }.buttonStyle(.plain).font(.system(size: 11)).padding(.horizontal, 12).frame(height: 34)
     }
 }
@@ -241,7 +247,7 @@ private struct FilterPanel: View {
                 Button("清除") { enabled = false; value = ""; sortField = ""; model.applyFilter(nil, sort: nil) }
                 Button("应用") { model.applyFilter(enabled ? FilterRule(column: field, operation: operation, value: value) : nil, sort: sortField.isEmpty ? nil : SortRule(column: sortField, direction: direction)) }.buttonStyle(.borderedProminent)
             }
-        }.controlSize(.small).font(.system(size: 12)).padding(12).background(Color(nsColor: .controlBackgroundColor)).disabled(!model.canOperate)
+        }.controlSize(.small).font(.system(size: 12)).padding(12).background(Color(nsColor: .controlBackgroundColor)).disabled(!model.canUseTableTools)
         .onAppear { field = tab.filter?.column ?? tab.schema.first?.name ?? ""; operation = tab.filter?.operation ?? .equals; value = tab.filter?.value ?? ""; enabled = tab.filter != nil; syncSort() }
         .onChange(of: tab.sort) { _, _ in syncSort() }
     }

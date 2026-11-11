@@ -1,6 +1,7 @@
 .build/
 .swiftpm/
 dist/
+dist-*/
 .DS_Store
 *.xcuserstate
 *.log

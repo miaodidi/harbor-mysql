@@ -16,11 +16,11 @@ public enum SQLBuilder {
         }
     }
     public static func select(table reference: TableReference, columns: [String], filter: FilterRule? = nil, sort: SortRule? = nil,
-                              page: Int = 0, pageSize: Int = 100) throws -> String {
+                              page: Int = 0, pageSize: Int = 100, allColumns: Bool = false) throws -> String {
         guard !columns.isEmpty, page >= 0, (1...1000).contains(pageSize), page <= Int.max / pageSize else {
             throw HarborError.message("请至少显示一列，并使用有效的分页大小。")
         }
-        var sql = "SELECT " + columns.map(identifier).joined(separator: ", ") + " FROM " + table(reference)
+        var sql = "SELECT " + (allColumns ? "*" : columns.map(identifier).joined(separator: ", ")) + " FROM " + table(reference)
         if let filter {
             let field = identifier(filter.column)
             switch filter.operation {
