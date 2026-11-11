@@ -43,7 +43,7 @@ final class MySQLIntegrationTests: XCTestCase {
             XCTAssertEqual(events.first?.name, "test_event")
             let allObjects = try await session.tables(in: database)
             XCTAssertTrue(allObjects.contains { $0.name == "names" && $0.isView })
-            for object in routines + events + triggers + columns.prefix(1) {
+            for object in routines + events + triggers + Array(columns.prefix(1)) {
                 let ddl = try await session.execute(object.sql); XCTAssertFalse(ddl.rows.isEmpty)
             }
             let result = try await session.execute("SELECT * FROM \(SQLBuilder.table(table)) ORDER BY id")
